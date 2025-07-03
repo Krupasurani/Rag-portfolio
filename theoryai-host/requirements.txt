@@ -1,10 +1,8 @@
 streamlit==1.28.1
+groq==0.4.1
 qdrant-client==1.6.4
 sentence-transformers==2.2.2
-numpy==1.24.3
-requests==2.31.0
 torch==2.0.1
-transformers==4.35.2
-groq==0.4.1
-
+numpy==1.24.3
+pandas==2.3.0
 #7507f7427affad2a0129554d68e58b8426faf16831b257c5a11ef05d84ee5575
