@@ -5,3 +5,6 @@ numpy==1.24.3
 requests==2.31.0
 torch==2.0.1
 transformers==4.35.2
+groq==0.4.1
+
+#7507f7427affad2a0129554d68e58b8426faf16831b257c5a11ef05d84ee5575
