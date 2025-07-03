@@ -48,7 +48,7 @@ def check_environment():
     if os.getenv('STREAMLIT_CLOUD') or 'streamlit.app' in os.getenv('HOSTNAME', ''):
         st.sidebar.info("🌐 Running on Streamlit Cloud")
     else:
-        st.sidebar.info("💻 Running locally")
+        st.sidebar.info("")
 
 # CSS (exact same as original)
 st.markdown("""
@@ -433,7 +433,7 @@ if 'renaming_session' not in st.session_state:
 # Initialize RAG system with better error handling for Streamlit Cloud
 def get_or_create_rag_system():
     if st.session_state.rag_system is None:
-        with st.spinner("🔄 Initializing Philosophy AI with Groq Llama 3.1 8B Instant..."):
+        with st.spinner("🔄 Initializing Theory AI ..."):
             try:
                 st.session_state.rag_system = create_intelligent_philosophy_rag(
                     qdrant_url="https://fb9ece4c-0f7a-4ec8-8ed9-dd5056f41da6.europe-west3-0.gcp.cloud.qdrant.io:6333",
@@ -571,7 +571,7 @@ with st.sidebar:
 
     st.markdown("### 📚 Available Books")
     if st.session_state.books:
-        st.markdown("**Philosophy Collection:**")
+        st.markdown("**Book Collection:**")
         for i, book in enumerate(st.session_state.books, 1):
             st.markdown(f"{i}. {book}")
     else:
@@ -590,8 +590,8 @@ with st.sidebar:
 # Main content
 st.markdown("""
 <div class="chat-header">
-    <h1 class="chat-title">🧠 Philosophy AI</h1>
-    <p style="color: var(--text-secondary); font-size: 1rem; margin-top: 0.5rem;">Powered by Groq Llama 3.1 8B Instant</p>
+    <h1 class="chat-title">🧠 Theory AI</h1>
+    <p style="color: var(--text-secondary); font-size: 1rem; margin-top: 0.5rem;">Theory AI</p>
 </div>
 """, unsafe_allow_html=True)
 
