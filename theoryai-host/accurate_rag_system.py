@@ -1,4 +1,3 @@
-
 import os
 import json
 import uuid
@@ -7,22 +6,14 @@ import numpy as np
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 import logging
-from dataclasses import dataclass, asdict
-import requests
+from dataclasses import dataclass
 from collections import defaultdict
 
 # Core libraries
 from qdrant_client import QdrantClient
+from sentence_transformers import SentenceTransformer
 
-# Updated sentence transformers import for compatibility
-try:
-    from sentence_transformers import SentenceTransformer
-    SENTENCE_TRANSFORMERS_AVAILABLE = True
-except ImportError:
-    SENTENCE_TRANSFORMERS_AVAILABLE = False
-    print("⚠️ SentenceTransformers not available")
-
-# Groq SDK
+# Groq SDK with proper import handling
 try:
     from groq import Groq
     GROQ_AVAILABLE = True
@@ -75,47 +66,73 @@ class QueryAnalysis:
     search_strategy: str
     context_requirements: Dict[str, Any]
 
+class GroqClient:
+    """Simple Groq client wrapper to avoid proxies issue"""
+    
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.base_url = "https://api.groq.com/openai/v1"
+        
+    def chat_completions_create(self, model: str, messages: List[Dict], temperature: float = 0.1, max_tokens: int = 1024):
+        """Create chat completion using requests"""
+        import requests
+        
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": False
+        }
+        
+        response = requests.post(
+            f"{self.base_url}/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=30
+        )
+        
+        if response.status_code == 200:
+            return response.json()
+        else:
+            raise Exception(f"Groq API error: {response.status_code} - {response.text}")
+
 class LLMPoweredAnalyzer:
-    """Use LLM intelligence with Groq SDK"""
+    """Use LLM intelligence with custom Groq client"""
     
     def __init__(self, llm_config: Dict[str, Any], available_books: List[str]):
         self.llm_config = llm_config
         self.available_books = available_books
-        
-        # Initialize Groq client
         self.groq_client = self._init_groq_client()
     
     def _init_groq_client(self):
-        """Initialize Groq client with proper error handling"""
-        if not GROQ_AVAILABLE:
-            logger.error("Groq SDK not available")
-            return None
-        
+        """Initialize custom Groq client"""
         try:
-            # Get API key from environment or secrets
             api_key = self._get_groq_api_key()
-            
             if not api_key:
                 logger.error("No Groq API key found")
                 return None
             
-            # Initialize Groq client with minimal parameters
-            client = Groq(api_key=api_key)
+            client = GroqClient(api_key)
             
             # Test the connection
             try:
-                test_completion = client.chat.completions.create(
+                response = client.chat_completions_create(
                     model="llama-3.1-8b-instant",
                     messages=[{"role": "user", "content": "test"}],
-                    max_tokens=1,
-                    temperature=0
+                    max_tokens=1
                 )
-                logger.info("✅ Groq client initialized successfully")
+                logger.info("✅ Custom Groq client initialized successfully")
                 return client
             except Exception as test_error:
                 logger.error(f"Groq client test failed: {test_error}")
                 return None
-            
+                
         except Exception as e:
             logger.error(f"Failed to initialize Groq client: {e}")
             return None
@@ -176,26 +193,19 @@ Respond with this JSON structure:
 Only respond with the JSON, no additional text."""
     
     def _call_groq_llm(self, prompt: str) -> str:
-        """Call Groq LLM using official SDK with proper error handling"""
+        """Call Groq LLM using custom client"""
         if not self.groq_client:
             raise Exception("Groq client not initialized")
         
         try:
-            completion = self.groq_client.chat.completions.create(
+            response = self.groq_client.chat_completions_create(
                 model="llama-3.1-8b-instant",
-                messages=[
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ],
+                messages=[{"role": "user", "content": prompt}],
                 temperature=0.1,
-                max_tokens=500,
-                top_p=0.9,
-                stream=False
+                max_tokens=500
             )
             
-            return completion.choices[0].message.content
+            return response['choices'][0]['message']['content']
             
         except Exception as e:
             logger.error(f"Groq API call failed: {e}")
@@ -281,7 +291,7 @@ class SimpleMemory:
         ) for msg in messages]
 
 class IntelligentPhilosophyRAG:
-    """RAG system with Groq Llama 3.1 8B Instant"""
+    """RAG system with custom Groq integration"""
     
     def __init__(self, 
                  qdrant_url: str,
@@ -296,27 +306,16 @@ class IntelligentPhilosophyRAG:
         # Load configuration
         self.config = self._load_environment_config()
         
-        logger.info("🚀 Initializing Intelligent Dynamic RAG System with Groq SDK...")
-        
-        # Initialize Groq client
-        self.groq_client = self._init_groq_client()
+        logger.info("🚀 Initializing Intelligent Dynamic RAG System with Custom Groq Client...")
         
         # Initialize components
         try:
             self.qdrant_client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
-            
-            # Initialize embedding model with error handling
-            if SENTENCE_TRANSFORMERS_AVAILABLE:
-                try:
-                    self.embedding_model = SentenceTransformer(embedding_model)
-                    logger.info(f"✅ Embedding model {embedding_model} loaded successfully")
-                except Exception as e:
-                    logger.error(f"Failed to load embedding model: {e}")
-                    raise
-            else:
-                raise ImportError("SentenceTransformers not available")
-                
+            self.embedding_model = SentenceTransformer(embedding_model)
             self.memory = SimpleMemory()
+            
+            # Initialize custom Groq client
+            self.groq_client = self._init_groq_client()
             
             # Dynamic components
             self.available_books = []
@@ -327,42 +326,34 @@ class IntelligentPhilosophyRAG:
             self._discover_knowledge_base()
             self._initialize_llm_analyzer()
             
-            logger.info("🎉 Intelligent RAG System ready with Groq Llama 3.1 8B!")
+            logger.info("🎉 Intelligent RAG System ready with Custom Groq Client!")
         except Exception as e:
             logger.error(f"Failed to initialize RAG system: {e}")
             raise
     
     def _init_groq_client(self):
-        """Initialize Groq client with proper error handling"""
-        if not GROQ_AVAILABLE:
-            logger.error("Groq SDK not available")
-            return None
-        
+        """Initialize custom Groq client"""
         try:
-            # Get API key from environment or secrets
             api_key = self._get_groq_api_key()
-            
             if not api_key:
                 logger.error("No Groq API key found")
                 return None
             
-            # Initialize Groq client with minimal parameters
-            client = Groq(api_key=api_key)
+            client = GroqClient(api_key)
             
             # Test the connection
             try:
-                test_completion = client.chat.completions.create(
+                response = client.chat_completions_create(
                     model="llama-3.1-8b-instant",
                     messages=[{"role": "user", "content": "test"}],
-                    max_tokens=1,
-                    temperature=0
+                    max_tokens=1
                 )
-                logger.info("✅ Groq client initialized successfully")
+                logger.info("✅ Custom Groq client initialized successfully")
                 return client
             except Exception as test_error:
                 logger.error(f"Groq client test failed: {test_error}")
                 return None
-            
+                
         except Exception as e:
             logger.error(f"Failed to initialize Groq client: {e}")
             return None
@@ -503,7 +494,7 @@ class IntelligentPhilosophyRAG:
             }
             
             self.analyzer = LLMPoweredAnalyzer(llm_config, self.available_books)
-            logger.info("✅ LLM-powered analyzer initialized with Groq SDK")
+            logger.info("✅ LLM-powered analyzer initialized with Custom Groq Client")
         except Exception as e:
             logger.warning(f"LLM analyzer initialization had issues: {e}")
             # Create a basic analyzer that will use fallback methods
@@ -578,26 +569,19 @@ class IntelligentPhilosophyRAG:
         return processed
     
     def _call_groq_llm_for_response(self, prompt: str) -> str:
-        """Call Groq LLM for response generation with proper error handling"""
+        """Call Groq LLM for response generation"""
         if not self.groq_client:
             raise Exception("Groq client not initialized")
         
         try:
-            completion = self.groq_client.chat.completions.create(
+            response = self.groq_client.chat_completions_create(
                 model="llama-3.1-8b-instant",
-                messages=[
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ],
+                messages=[{"role": "user", "content": prompt}],
                 temperature=0.1,
-                max_tokens=1024,
-                top_p=0.9,
-                stream=False
+                max_tokens=1024
             )
             
-            return completion.choices[0].message.content
+            return response['choices'][0]['message']['content']
             
         except Exception as e:
             logger.error(f"Groq API call failed: {e}")
@@ -640,7 +624,7 @@ class IntelligentPhilosophyRAG:
     
     def generate_intelligent_response(self, query: str, context: str, sources: List[str], 
                                     analysis: QueryAnalysis, conversation_history: str = "") -> str:
-        """Generate response using Groq Llama 3.1 8B Instant"""
+        """Generate response using custom Groq client"""
         
         if not context.strip():
             return "I don't have relevant information about this topic in my knowledge base. Please ask questions related to the available philosophical works."
@@ -670,7 +654,7 @@ Instructions:
 
 Answer:"""
             
-            # Call Groq Llama using SDK
+            # Call custom Groq client
             response = self._call_groq_llm_for_response(user_prompt)
             
             # Add source attribution if not present
@@ -702,7 +686,7 @@ Answer:"""
         return "\n".join(history_parts)
     
     def chat(self, query: str, session_id: str = None) -> Tuple[str, str, List[str]]:
-        """Main chat function with full LLM intelligence"""
+        """Main chat function with custom Groq integration"""
         
         try:
             # Create session if needed
@@ -795,7 +779,7 @@ Answer:"""
                 'avg_chunks_per_book': round(avg_chunks_per_book, 1),
                 'llm_model': self.config['llm_model'],
                 'system_ready': self.groq_client is not None,
-                'groq_available': GROQ_AVAILABLE
+                'groq_available': True
             }
         except Exception as e:
             logger.error(f"❌ Error getting stats: {e}")
@@ -804,7 +788,7 @@ Answer:"""
                 'collection_status': 'Unknown',
                 'available_books': len(self.available_books),
                 'system_ready': False,
-                'groq_available': GROQ_AVAILABLE
+                'groq_available': False
             }
 
 # Factory function for easy integration
@@ -812,7 +796,7 @@ def create_intelligent_philosophy_rag(qdrant_url: str, qdrant_api_key: str,
                                     collection_name: str = "psychology_books_kb",
                                     embedding_model: str = "all-MiniLM-L6-v2",
                                     llama_model: str = "llama-3.1-8b-instant") -> IntelligentPhilosophyRAG:
-    """Create an intelligent LLM-powered philosophy RAG system with Groq SDK"""
+    """Create an intelligent LLM-powered philosophy RAG system with custom Groq client"""
     return IntelligentPhilosophyRAG(
         qdrant_url=qdrant_url,
         qdrant_api_key=qdrant_api_key,
