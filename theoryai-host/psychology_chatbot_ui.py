@@ -3,14 +3,35 @@ from datetime import datetime
 import warnings
 import json
 import uuid
+import sys
+import os
 
 warnings.filterwarnings("ignore")
 
-# Import RAG system - now using Groq SDK
+# Add current directory to Python path for imports
+current_dir = os.path.dirname(os.path.abspath(__file__))
+if current_dir not in sys.path:
+    sys.path.append(current_dir)
+
+# Import RAG system with better error handling
 try:
     from accurate_rag_system import create_intelligent_philosophy_rag
-except ImportError:
-    st.error("❌ Missing accurate_rag_system.py")
+    RAG_IMPORT_SUCCESS = True
+except ImportError as e:
+    RAG_IMPORT_SUCCESS = False
+    st.error(f"❌ Import Error: {str(e)}")
+    st.error("📁 Please ensure 'accurate_rag_system.py' is in the same directory as this app")
+    st.info("🔍 Current directory contents:")
+    
+    # Show current directory contents for debugging
+    try:
+        current_files = os.listdir(current_dir)
+        st.write(f"Files in {current_dir}:")
+        for file in current_files:
+            st.write(f"  - {file}")
+    except Exception:
+        st.write("Could not list directory contents")
+    
     st.stop()
 
 # Page config
@@ -21,7 +42,15 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# CSS (keep your existing CSS - unchanged)
+# Environment check for Streamlit Cloud
+def check_environment():
+    """Check if we're running on Streamlit Cloud and show debug info"""
+    if os.getenv('STREAMLIT_CLOUD') or 'streamlit.app' in os.getenv('HOSTNAME', ''):
+        st.sidebar.info("🌐 Running on Streamlit Cloud")
+    else:
+        st.sidebar.info("💻 Running locally")
+
+# CSS (exact same as original)
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
@@ -350,11 +379,10 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Session state and helper functions (keep your existing code)
+# Session state and helper functions
 def load_chat_sessions():
     """Load chat sessions from file"""
     try:
-        import os
         if os.path.exists("chat_sessions.json"):
             with open("chat_sessions.json", "r", encoding='utf-8') as f:
                 data = json.load(f)
@@ -402,20 +430,28 @@ if 'books' not in st.session_state:
 if 'renaming_session' not in st.session_state:
     st.session_state.renaming_session = None
 
-# Initialize RAG system with Groq SDK
+# Initialize RAG system with better error handling for Streamlit Cloud
 def get_or_create_rag_system():
     if st.session_state.rag_system is None:
         with st.spinner("🔄 Initializing Philosophy AI with Groq Llama 3.1 8B Instant..."):
-            st.session_state.rag_system = create_intelligent_philosophy_rag(
-                qdrant_url="https://fb9ece4c-0f7a-4ec8-8ed9-dd5056f41da6.europe-west3-0.gcp.cloud.qdrant.io:6333",
-                qdrant_api_key="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2Nlc3MiOiJtIn0.AXcpbBYr2Jt5t2ysC1z0I2duz-uSK5H9cLPg5YXw_7k",
-                collection_name="psychology_books_kb",
-                llama_model="llama-3.1-8b-instant"
-            )
-            st.session_state.books = st.session_state.rag_system.get_available_books()
+            try:
+                st.session_state.rag_system = create_intelligent_philosophy_rag(
+                    qdrant_url="https://fb9ece4c-0f7a-4ec8-8ed9-dd5056f41da6.europe-west3-0.gcp.cloud.qdrant.io:6333",
+                    qdrant_api_key="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2Nlc3MiOiJtIn0.AXcpbBYr2Jt5t2ysC1z0I2duz-uSK5H9cLPg5YXw_7k",
+                    collection_name="psychology_books_kb",
+                    llama_model="llama-3.1-8b-instant"
+                )
+                st.session_state.books = st.session_state.rag_system.get_available_books()
+                st.success("✅ Philosophy AI initialized successfully!")
+            except Exception as e:
+                st.error(f"❌ Failed to initialize RAG system: {str(e)}")
+                st.info("💡 Make sure your Groq API key is set in Streamlit Cloud secrets")
+                # Create a dummy system to prevent crashes
+                st.session_state.rag_system = "error"
+                st.session_state.books = []
     return st.session_state.rag_system
 
-# Helper functions (keep your existing helper functions)
+# Helper functions
 def create_new_session():
     session_id = str(uuid.uuid4())[:8]
     st.session_state.chat_sessions[session_id] = {
@@ -456,8 +492,11 @@ def rename_session(session_id, new_title):
         st.session_state.chat_sessions[session_id]['title'] = new_title
         save_chat_sessions()
 
-# Sidebar (keep your existing sidebar code)
+# Sidebar
 with st.sidebar:
+    # Environment check
+    check_environment()
+    
     if st.button("✨ New Chat", use_container_width=True, type="primary"):
         create_new_session()
         st.rerun()
@@ -591,11 +630,14 @@ if prompt := st.chat_input("Ask me about philosophy..."):
 
     add_message("user", prompt)
 
-    with st.spinner("🦙 Groq Llama 3.1 8B is processing your question..."):
-        try:
-            response, session_id, sources = rag.chat(prompt, st.session_state.current_session_id)
-            add_message("assistant", response, sources)
-        except Exception as e:
-            add_message("assistant", f"I apologize, but I encountered an error while processing your question: {str(e)}")
+    if rag != "error":
+        with st.spinner("🦙 Groq Llama 3.1 8B is processing your question..."):
+            try:
+                response, session_id, sources = rag.chat(prompt, st.session_state.current_session_id)
+                add_message("assistant", response, sources)
+            except Exception as e:
+                add_message("assistant", f"I apologize, but I encountered an error while processing your question: {str(e)}")
+    else:
+        add_message("assistant", "❌ The RAG system failed to initialize. Please check the configuration and try again.")
 
     st.rerun()
