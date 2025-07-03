@@ -344,7 +344,7 @@ class IntelligentPhilosophyRAG:
             'enable_hallucination_check': bool(get_config_value('ENABLE_HALLUCINATION_CHECK', '1') == '1'),
         }
     
-    
+
     def _discover_knowledge_base(self):
         """Discover everything about the knowledge base dynamically"""
         logger.info("🔍 Discovering knowledge base structure...")
@@ -646,7 +646,6 @@ How many search results needed (5-40)? Respond with just a number.
         # Get token from environment or secrets
         hf_token = os.getenv('HF_TOKEN')
         if not hf_token:
-            # Try to get from streamlit secrets if available
             try:
                 import streamlit as st
                 hf_token = st.secrets.get('HF_TOKEN')
@@ -661,10 +660,7 @@ How many search results needed (5-40)? Respond with just a number.
             "Content-Type": "application/json"
         }
 
-        # Use Llama 2 for better responses
         model_url = "https://api-inference.huggingface.co/models/meta-llama/Llama-2-7b-chat-hf"
-
-        # Format prompt for Llama 2 chat format
         formatted_prompt = f"<s>[INST] {prompt} [/INST]"
 
         payload = {
@@ -684,15 +680,12 @@ How many search results needed (5-40)? Respond with just a number.
             result = response.json()
             if isinstance(result, list) and len(result) > 0:
                 generated_text = result[0].get('generated_text', '')
-                # Clean up the response
                 cleaned_text = generated_text.replace(formatted_prompt, '').strip()
                 return cleaned_text if cleaned_text else generated_text
             else:
                 return str(result)
         else:
             error_msg = f"Hugging Face API error: {response.status_code}"
-            if response.text:
-                error_msg += f" - {response.text}"
             raise Exception(error_msg)
     
     def assemble_dynamic_context(self, results: List[SearchResult], analysis: QueryAnalysis) -> Tuple[str, List[str]]:
