@@ -1,3 +1,4 @@
+
 import os
 import json
 import uuid
@@ -12,7 +13,14 @@ from collections import defaultdict
 
 # Core libraries
 from qdrant_client import QdrantClient
-from sentence_transformers import SentenceTransformer
+
+# Updated sentence transformers import for compatibility
+try:
+    from sentence_transformers import SentenceTransformer
+    SENTENCE_TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    SENTENCE_TRANSFORMERS_AVAILABLE = False
+    print("⚠️ SentenceTransformers not available")
 
 # Groq SDK
 try:
@@ -125,16 +133,6 @@ class LLMPoweredAnalyzer:
             if hasattr(st, 'secrets') and 'GROQ_API_KEY' in st.secrets:
                 return st.secrets['GROQ_API_KEY']
         except Exception:
-            pass
-        
-        # Try .env file
-        try:
-            from dotenv import load_dotenv
-            load_dotenv()
-            api_key = os.getenv('GROQ_API_KEY')
-            if api_key:
-                return api_key
-        except ImportError:
             pass
         
         return None
@@ -306,7 +304,18 @@ class IntelligentPhilosophyRAG:
         # Initialize components
         try:
             self.qdrant_client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
-            self.embedding_model = SentenceTransformer(embedding_model)
+            
+            # Initialize embedding model with error handling
+            if SENTENCE_TRANSFORMERS_AVAILABLE:
+                try:
+                    self.embedding_model = SentenceTransformer(embedding_model)
+                    logger.info(f"✅ Embedding model {embedding_model} loaded successfully")
+                except Exception as e:
+                    logger.error(f"Failed to load embedding model: {e}")
+                    raise
+            else:
+                raise ImportError("SentenceTransformers not available")
+                
             self.memory = SimpleMemory()
             
             # Dynamic components
@@ -371,16 +380,6 @@ class IntelligentPhilosophyRAG:
             if hasattr(st, 'secrets') and 'GROQ_API_KEY' in st.secrets:
                 return st.secrets['GROQ_API_KEY']
         except Exception:
-            pass
-        
-        # Try .env file
-        try:
-            from dotenv import load_dotenv
-            load_dotenv()
-            api_key = os.getenv('GROQ_API_KEY')
-            if api_key:
-                return api_key
-        except ImportError:
             pass
         
         return None
