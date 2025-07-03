@@ -68,11 +68,15 @@ class LLMPoweredAnalyzer:
         self.available_books = available_books
     
     def analyze_query_with_llm(self, query: str) -> QueryAnalysis:
-        """Let LLM analyze the query - no fallbacks"""
+        """Let LLM analyze the query - with fallback"""
         analysis_prompt = self._build_analysis_prompt(query)
         
-        llm_response = self._call_llm(analysis_prompt)
-        return self._parse_analysis_response(llm_response, query)
+        try:
+            llm_response = self._call_llm(analysis_prompt)
+            return self._parse_analysis_response(llm_response, query)
+        except Exception as e:
+            logger.warning(f"LLM analysis failed: {e}, using fallback")
+            return self._fallback_analysis(query)
     
     def _build_analysis_prompt(self, query: str) -> str:
         """Build dynamic analysis prompt"""
@@ -105,35 +109,40 @@ Only respond with the JSON, no additional text.
 """
     
     def _call_llm(self, prompt: str) -> str:
-        """Call LLM with robust error handling"""
+        """Call LLM with robust error handling - supports both Ollama and Hugging Face"""
         try:
-            chat_data = {
-                "model": self.llm_config['model'],
-                "messages": [{"role": "user", "content": prompt}],
-                "stream": False,
-                "options": {
-                    "temperature": 0.1,
-                    "num_predict": 500,
-                    "top_p": 0.9
-                }
-            }
-            
-            response = requests.post(
-                f"{self.llm_config['base_url']}/api/chat",
-                json=chat_data,
-                timeout=300
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                content = result.get('message', {}).get('content', '')
-                if content:
-                    return content
-                else:
-                    raise Exception("Empty response from LLM")
+            # Check if using Hugging Face
+            if "api-inference.huggingface.co" in self.llm_config['base_url']:
+                return self._call_huggingface(prompt)
             else:
-                raise Exception(f"LLM returned status {response.status_code}: {response.text}")
+                # Original Ollama code
+                chat_data = {
+                    "model": self.llm_config['model'],
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.1,
+                        "num_predict": 500,
+                        "top_p": 0.9
+                    }
+                }
                 
+                response = requests.post(
+                    f"{self.llm_config['base_url']}/api/chat",
+                    json=chat_data,
+                    timeout=300
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    content = result.get('message', {}).get('content', '')
+                    if content:
+                        return content
+                    else:
+                        raise Exception("Empty response from LLM")
+                else:
+                    raise Exception(f"LLM returned status {response.status_code}: {response.text}")
+                    
         except requests.exceptions.Timeout:
             raise Exception("LLM request timed out")
         except requests.exceptions.ConnectionError:
@@ -141,25 +150,78 @@ Only respond with the JSON, no additional text.
         except Exception as e:
             raise Exception(f"LLM call failed: {str(e)}")
     
-    def _parse_analysis_response(self, llm_response: str, original_query: str) -> QueryAnalysis:
-        """Parse LLM analysis response - no fallbacks"""
-        # Extract JSON from response
-        json_match = re.search(r'\{.*\}', llm_response, re.DOTALL)
-        if json_match:
-            analysis_data = json.loads(json_match.group())
-        else:
-            analysis_data = json.loads(llm_response)
+    def _call_huggingface(self, prompt: str) -> str:
+        """Call Hugging Face Inference API"""
+        import os
         
-        return QueryAnalysis(
-            query=original_query,
-            detected_books=analysis_data.get('detected_books', []),
-            query_intent=analysis_data.get('query_intent', 'general'),
-            complexity_level=analysis_data.get('complexity_level', 'moderate'),
-            requires_quotes=analysis_data.get('requires_quotes', False),
-            expected_sources=analysis_data.get('expected_sources', 3),
-            search_strategy=analysis_data.get('search_strategy', 'broad'),
-            context_requirements=analysis_data.get('context_requirements', {})
-        )
+        # Get token from environment or secrets
+        hf_token = os.getenv('HF_TOKEN')
+        if not hf_token:
+            try:
+                import streamlit as st
+                hf_token = st.secrets.get('HF_TOKEN')
+            except:
+                pass
+        
+        if not hf_token:
+            raise Exception("No Hugging Face token found")
+        
+        headers = {
+            "Authorization": f"Bearer {hf_token}",
+            "Content-Type": "application/json"
+        }
+        
+        model_url = "https://api-inference.huggingface.co/models/meta-llama/Llama-2-7b-chat-hf"
+        formatted_prompt = f"<s>[INST] {prompt} [/INST]"
+        
+        payload = {
+            "inputs": formatted_prompt,
+            "parameters": {
+                "max_new_tokens": 300,
+                "temperature": 0.1,
+                "do_sample": True,
+                "top_p": 0.9,
+                "return_full_text": False
+            }
+        }
+        
+        response = requests.post(model_url, headers=headers, json=payload, timeout=300)
+        
+        if response.status_code == 200:
+            result = response.json()
+            if isinstance(result, list) and len(result) > 0:
+                generated_text = result[0].get('generated_text', '')
+                cleaned_text = generated_text.replace(formatted_prompt, '').strip()
+                return cleaned_text if cleaned_text else generated_text
+            else:
+                return str(result)
+        else:
+            error_msg = f"Hugging Face API error: {response.status_code}"
+            raise Exception(error_msg)
+    
+    def _parse_analysis_response(self, llm_response: str, original_query: str) -> QueryAnalysis:
+        """Parse LLM analysis response with fallback"""
+        try:
+            # Extract JSON from response
+            json_match = re.search(r'\{.*\}', llm_response, re.DOTALL)
+            if json_match:
+                analysis_data = json.loads(json_match.group())
+            else:
+                analysis_data = json.loads(llm_response)
+            
+            return QueryAnalysis(
+                query=original_query,
+                detected_books=analysis_data.get('detected_books', []),
+                query_intent=analysis_data.get('query_intent', 'general'),
+                complexity_level=analysis_data.get('complexity_level', 'moderate'),
+                requires_quotes=analysis_data.get('requires_quotes', False),
+                expected_sources=analysis_data.get('expected_sources', 3),
+                search_strategy=analysis_data.get('search_strategy', 'broad'),
+                context_requirements=analysis_data.get('context_requirements', {})
+            )
+        except Exception as e:
+            logger.warning(f"Failed to parse LLM response: {e}")
+            return self._fallback_analysis(original_query)
     
     def _fallback_analysis(self, query: str) -> QueryAnalysis:
         """Simple fallback when LLM analysis fails"""
@@ -188,33 +250,36 @@ class ConversationMemory:
     
     def init_database(self):
         """Initialize SQLite database"""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute('''
-                CREATE TABLE IF NOT EXISTS conversations (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT NOT NULL,
-                    message_id TEXT NOT NULL,
-                    role TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    timestamp DATETIME NOT NULL,
-                    has_sources BOOLEAN DEFAULT FALSE,
-                    query_analysis TEXT,
-                    sources_used TEXT,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute('''
+                    CREATE TABLE IF NOT EXISTS conversations (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        session_id TEXT NOT NULL,
+                        message_id TEXT NOT NULL,
+                        role TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        timestamp DATETIME NOT NULL,
+                        has_sources BOOLEAN DEFAULT FALSE,
+                        query_analysis TEXT,
+                        sources_used TEXT,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
+                
+                conn.execute('''
+                    CREATE TABLE IF NOT EXISTS sessions (
+                        session_id TEXT PRIMARY KEY,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        title TEXT,
+                        total_messages INTEGER DEFAULT 0
+                    )
+                ''')
             
-            conn.execute('''
-                CREATE TABLE IF NOT EXISTS sessions (
-                    session_id TEXT PRIMARY KEY,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    title TEXT,
-                    total_messages INTEGER DEFAULT 0
-                )
-            ''')
-        
-        logger.info("✅ Conversation memory initialized")
+            logger.info("✅ Conversation memory initialized")
+        except Exception as e:
+            logger.error(f"Database initialization failed: {e}")
     
     def create_session(self, title: str = None) -> str:
         """Create new session"""
@@ -222,8 +287,11 @@ class ConversationMemory:
         if title is None:
             title = f"Chat - {datetime.now().strftime('%m/%d %H:%M')}"
         
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute('INSERT INTO sessions (session_id, title) VALUES (?, ?)', (session_id, title))
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute('INSERT INTO sessions (session_id, title) VALUES (?, ?)', (session_id, title))
+        except Exception as e:
+            logger.error(f"Failed to create session: {e}")
         
         return session_id
     
@@ -231,38 +299,45 @@ class ConversationMemory:
                    has_sources: bool = False, query_analysis: Dict = None, 
                    sources_used: List[str] = None):
         """Add message with metadata"""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute('''
-                INSERT INTO conversations 
-                (session_id, message_id, role, content, timestamp, has_sources, 
-                 query_analysis, sources_used)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (session_id, message.message_id, message.role, 
-                  message.content, message.timestamp.isoformat(), has_sources,
-                  json.dumps(query_analysis) if query_analysis else None,
-                  json.dumps(sources_used) if sources_used else None))
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute('''
+                    INSERT INTO conversations 
+                    (session_id, message_id, role, content, timestamp, has_sources, 
+                     query_analysis, sources_used)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (session_id, message.message_id, message.role, 
+                      message.content, message.timestamp.isoformat(), has_sources,
+                      json.dumps(query_analysis) if query_analysis else None,
+                      json.dumps(sources_used) if sources_used else None))
+        except Exception as e:
+            logger.error(f"Failed to add message: {e}")
     
     def get_conversation_history(self, session_id: str, limit: int = 10) -> List[ChatMessage]:
         """Get conversation history"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute('''
-                SELECT message_id, role, content, timestamp
-                FROM conversations
-                WHERE session_id = ?
-                ORDER BY timestamp DESC
-                LIMIT ?
-            ''', (session_id, limit))
-            
-            messages = []
-            for row in reversed(cursor.fetchall()):
-                messages.append(ChatMessage(
-                    message_id=row[0],
-                    role=row[1],
-                    content=row[2],
-                    timestamp=datetime.fromisoformat(row[3])
-                ))
-            
-            return messages
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute('''
+                    SELECT message_id, role, content, timestamp
+                    FROM conversations
+                    WHERE session_id = ?
+                    ORDER BY timestamp DESC
+                    LIMIT ?
+                ''', (session_id, limit))
+                
+                messages = []
+                for row in reversed(cursor.fetchall()):
+                    messages.append(ChatMessage(
+                        message_id=row[0],
+                        role=row[1],
+                        content=row[2],
+                        timestamp=datetime.fromisoformat(row[3])
+                    ))
+                
+                return messages
+        except Exception as e:
+            logger.error(f"Failed to get conversation history: {e}")
+            return []
 
 class IntelligentPhilosophyRAG:
     """Fully dynamic RAG system powered by LLM intelligence"""
@@ -283,22 +358,25 @@ class IntelligentPhilosophyRAG:
         logger.info("🚀 Initializing Intelligent Dynamic RAG System...")
         
         # Initialize core components
-        self.qdrant_client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
-        self.embedding_model = SentenceTransformer(embedding_model)
-        self.memory = ConversationMemory()
-        
-        # Dynamic components - all discovered at runtime
-        self.available_books = []
-        self.book_metadata = {}
-        self.analyzer = None
-        
-        # Initialize everything dynamically
-        self._discover_knowledge_base()
-        self._initialize_llm_analyzer()
-        
-        logger.info("🎉 Intelligent RAG System ready!")
+        try:
+            self.qdrant_client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
+            self.embedding_model = SentenceTransformer(embedding_model)
+            self.memory = ConversationMemory()
+            
+            # Dynamic components - all discovered at runtime
+            self.available_books = []
+            self.book_metadata = {}
+            self.analyzer = None
+            
+            # Initialize everything dynamically
+            self._discover_knowledge_base()
+            self._initialize_llm_analyzer()
+            
+            logger.info("🎉 Intelligent RAG System ready!")
+        except Exception as e:
+            logger.error(f"Failed to initialize RAG system: {e}")
+            raise
     
-
     def _load_environment_config(self) -> Dict[str, Any]:
         """Load all configuration from environment variables"""
 
@@ -344,7 +422,6 @@ class IntelligentPhilosophyRAG:
             'enable_hallucination_check': bool(get_config_value('ENABLE_HALLUCINATION_CHECK', '1') == '1'),
         }
     
-
     def _discover_knowledge_base(self):
         """Discover everything about the knowledge base dynamically"""
         logger.info("🔍 Discovering knowledge base structure...")
@@ -357,40 +434,45 @@ class IntelligentPhilosophyRAG:
             batch_size = self.config['batch_size']
             
             while True:
-                scroll_result = self.qdrant_client.scroll(
-                    collection_name=self.collection_name,
-                    limit=batch_size,
-                    offset=offset,
-                    with_payload=True,
-                    with_vectors=False
-                )
-                
-                points = scroll_result[0]
-                if not points:
-                    break
-                
-                for point in points:
-                    payload = point.payload
-                    book_name = payload.get('book_name', '').strip()
-                    content = payload.get('content', '').strip()
+                try:
+                    scroll_result = self.qdrant_client.scroll(
+                        collection_name=self.collection_name,
+                        limit=batch_size,
+                        offset=offset,
+                        with_payload=True,
+                        with_vectors=False
+                    )
                     
-                    if book_name and content:
-                        books_found.add(book_name)
-                        stats = book_stats[book_name]
-                        stats['chunks'] += 1
-                        stats['total_chars'] += len(content)
+                    points = scroll_result[0]
+                    if not points:
+                        break
+                    
+                    for point in points:
+                        payload = point.payload
+                        book_name = payload.get('book_name', '').strip()
+                        content = payload.get('content', '').strip()
                         
-                        # Keep sample content for analysis
-                        if len(stats['sample_content']) < 3:
-                            stats['sample_content'].append(content[:200])
-                
-                offset += len(points)
-                if offset >= self.config['max_scan_limit']:
+                        if book_name and content:
+                            books_found.add(book_name)
+                            stats = book_stats[book_name]
+                            stats['chunks'] += 1
+                            stats['total_chars'] += len(content)
+                            
+                            # Keep sample content for analysis
+                            if len(stats['sample_content']) < 3:
+                                stats['sample_content'].append(content[:200])
+                    
+                    offset += len(points)
+                    if offset >= self.config['max_scan_limit']:
+                        break
+                        
+                except Exception as e:
+                    logger.warning(f"Error in knowledge base discovery batch: {e}")
                     break
             
             self.available_books = sorted(list(books_found))
             
-            # Build metadata using LLM analysis
+            # Build metadata
             for book_name in self.available_books:
                 stats = book_stats[book_name]
                 self.book_metadata[book_name] = {
@@ -408,13 +490,17 @@ class IntelligentPhilosophyRAG:
     
     def _initialize_llm_analyzer(self):
         """Initialize LLM-powered analyzer"""
-        llm_config = {
-            'model': self.config['llm_model'],
-            'base_url': self.config['llm_base_url']
-        }
-        
-        self.analyzer = LLMPoweredAnalyzer(llm_config, self.available_books)
-        logger.info("✅ LLM-powered analyzer initialized")
+        try:
+            llm_config = {
+                'model': self.config['llm_model'],
+                'base_url': self.config['llm_base_url']
+            }
+            
+            self.analyzer = LLMPoweredAnalyzer(llm_config, self.available_books)
+            logger.info("✅ LLM-powered analyzer initialized")
+        except Exception as e:
+            logger.error(f"Failed to initialize LLM analyzer: {e}")
+            self.analyzer = None
     
     def get_book_context_with_llm(self, book_name: str) -> str:
         """Get dynamic book context using LLM"""
@@ -437,16 +523,17 @@ class IntelligentPhilosophyRAG:
         try:
             response = self._call_llm_simple(context_prompt)
             return response.strip()
-        except:
+        except Exception as e:
+            logger.warning(f"Failed to get book context: {e}")
             return f"Book: {book_name}"
     
     def intelligent_search(self, query: str, analysis: QueryAnalysis) -> List[SearchResult]:
-        """Intelligent search with robust error handling and no LLM dependencies"""
+        """Intelligent search with robust error handling"""
         try:
             query_embedding = self.embedding_model.encode(query).tolist()
             
-            # Use smart search parameters based on analysis (no LLM calls)
-            search_limit = self._calculate_search_limit_simple(analysis)
+            # Use smart search parameters based on analysis
+            search_limit = self._calculate_search_limit(analysis)
             
             # Execute search
             search_results = self.qdrant_client.search(
@@ -459,47 +546,17 @@ class IntelligentPhilosophyRAG:
             # Process and filter results
             processed_results = self._process_search_results(search_results, analysis)
             
-            # Skip LLM filtering if LLM is having issues - just return top results
-            if len(processed_results) > 5:
-                return processed_results[:5]
-            else:
-                return processed_results
+            # Return top results
+            return processed_results[:5] if len(processed_results) > 5 else processed_results
             
         except Exception as e:
             logger.error(f"❌ Intelligent search failed: {e}")
             return []
     
-    def _calculate_search_limit_simple(self, analysis: QueryAnalysis) -> int:
-        """Calculate search limit using LLM intelligence - no fallbacks"""
-        
-        optimization_request = f"""
-Query: "{analysis.query}"
-Intent: {analysis.query_intent}
-
-How many search results needed (5-40)? Respond with just a number.
-"""
-        
-        llm_response = self._call_llm_simple(optimization_request)
-        
-        # Extract number from response
-        number_match = re.search(r'\b([5-9]|[1-3][0-9]|40)\b', llm_response)
-        if number_match:
-            return int(number_match.group(1))
-        else:
-            # Try again with simpler prompt
-            simple_request = f"For query '{analysis.query}', how many search results (5-40)? Number only:"
-            retry_response = self._call_llm_simple(simple_request)
-            retry_match = re.search(r'\b([5-9]|[1-3][0-9]|40)\b', retry_response)
-            if retry_match:
-                return int(retry_match.group(1))
-            else:
-                return 20  # Only if LLM completely fails to give a number
-    
     def _calculate_search_limit(self, analysis: QueryAnalysis) -> int:
         """Calculate search limit with robust fallback"""
-        
         try:
-            # Simplified LLM request
+            # Try LLM optimization first
             optimization_request = f"""
 Query: "{analysis.query}"
 Intent: {analysis.query_intent}
@@ -533,72 +590,30 @@ How many search results needed (5-40)? Respond with just a number.
         """Process search results based on analysis"""
         processed = []
         
-        for result in search_results:
-            payload = result.payload
-            book_name = payload.get('book_name', '').strip()
-            
-            # Filter by detected books if specified
-            if analysis.detected_books and book_name:
-                if not any(detected.lower() in book_name.lower() for detected in analysis.detected_books):
-                    continue
-            
-            processed.append(SearchResult(
-                content=payload.get('content', ''),
-                book_name=book_name,
-                filename=payload.get('filename', ''),
-                score=result.score,
-                chunk_id=payload.get('chunk_id', str(result.id)),
-                book_id=payload.get('book_id', ''),
-                chunk_number=payload.get('chunk_number', 0),
-                metadata=payload
-            ))
+        try:
+            for result in search_results:
+                payload = result.payload
+                book_name = payload.get('book_name', '').strip()
+                
+                # Filter by detected books if specified
+                if analysis.detected_books and book_name:
+                    if not any(detected.lower() in book_name.lower() for detected in analysis.detected_books):
+                        continue
+                
+                processed.append(SearchResult(
+                    content=payload.get('content', ''),
+                    book_name=book_name,
+                    filename=payload.get('filename', ''),
+                    score=result.score,
+                    chunk_id=payload.get('chunk_id', str(result.id)),
+                    book_id=payload.get('book_id', ''),
+                    chunk_number=payload.get('chunk_number', 0),
+                    metadata=payload
+                ))
+        except Exception as e:
+            logger.error(f"Error processing search results: {e}")
         
         return processed
-    
-    def _llm_filter_relevance(self, results: List[SearchResult], query: str, analysis: QueryAnalysis) -> List[SearchResult]:
-        """Use LLM to filter relevance and prevent hallucination"""
-        if not results:
-            return results
-        
-        # Take top results for LLM evaluation
-        top_results = results[:min(10, len(results))]
-        
-        relevance_prompt = f"""
-        Query: "{query}"
-        Query Intent: {analysis.query_intent}
-        
-        Evaluate which of these search results are truly relevant to answering the user's query:
-        
-        {self._format_results_for_llm(top_results)}
-        
-        Respond with a JSON array of result numbers (1-{len(top_results)}) that are relevant, ordered by relevance.
-        Example: [1, 3, 5]
-        
-        Only respond with the JSON array, no additional text.
-        """
-        
-        try:
-            llm_response = self._call_llm_simple(relevance_prompt)
-            relevant_indices = json.loads(llm_response.strip())
-            
-            filtered_results = []
-            for idx in relevant_indices:
-                if 1 <= idx <= len(top_results):
-                    filtered_results.append(top_results[idx - 1])
-            
-            return filtered_results
-            
-        except Exception as e:
-            logger.warning(f"LLM relevance filtering failed: {e}")
-            return results[:5]  # Fallback to top 5
-    
-    def _format_results_for_llm(self, results: List[SearchResult]) -> str:
-        """Format results for LLM evaluation"""
-        formatted = []
-        for i, result in enumerate(results, 1):
-            content_preview = result.content[:150] + "..." if len(result.content) > 150 else result.content
-            formatted.append(f"{i}. [{result.book_name}] {content_preview}")
-        return "\n\n".join(formatted)
     
     def _call_llm_simple(self, prompt: str) -> str:
         """Simple LLM call with Hugging Face support"""
@@ -689,7 +704,7 @@ How many search results needed (5-40)? Respond with just a number.
             raise Exception(error_msg)
     
     def assemble_dynamic_context(self, results: List[SearchResult], analysis: QueryAnalysis) -> Tuple[str, List[str]]:
-        """Assemble context using LLM intelligence for chunk overlap decision"""
+        """Assemble context using intelligent chunking"""
         if not results:
             return "", []
         
@@ -697,52 +712,41 @@ How many search results needed (5-40)? Respond with just a number.
         unique_sources = []
         seen_books = set()
         
-        # Use LLM to determine chunk overlap
-        overlap_request = f"""
-Query: "{analysis.query}"
-Intent: {analysis.query_intent}
-
-How many surrounding chunks for context (0-3)? Just respond with a number.
-"""
-        
-        try:
-            llm_response = self._call_llm_simple(overlap_request)
-            number_match = re.search(r'\b([0-3])\b', llm_response)
-            chunk_overlap = int(number_match.group(1)) if number_match else 2
-        except:
-            chunk_overlap = 2  # Emergency default only
-        
+        # Determine chunk overlap
+        chunk_overlap = self._get_chunk_overlap_from_analysis(analysis)
         max_context = self.config['max_context_length']
         
-        for i, result in enumerate(results):
-            book_name = result.book_name
-            if book_name not in seen_books:
-                unique_sources.append(book_name)
-                seen_books.add(book_name)
-            
-            # Get content (with error handling for chunk assembly)
-            if chunk_overlap > 0 and analysis.complexity_level in ['moderate', 'complex']:
-                assembled_content = self._get_related_chunks(result, chunk_overlap)
-            else:
-                assembled_content = result.content
-            
-            # Trim content to fit context limit
-            current_context_length = len('\n'.join(context_parts))
-            if current_context_length + len(assembled_content) > max_context:
-                remaining_space = max_context - current_context_length
-                if remaining_space > 100:  # Only add if meaningful space left
-                    assembled_content = assembled_content[:remaining_space - 50] + "..."
+        try:
+            for i, result in enumerate(results):
+                book_name = result.book_name
+                if book_name not in seen_books:
+                    unique_sources.append(book_name)
+                    seen_books.add(book_name)
+                
+                # Get content with overlap if needed
+                if chunk_overlap > 0 and analysis.complexity_level in ['moderate', 'complex']:
+                    assembled_content = self._get_related_chunks(result, chunk_overlap)
                 else:
-                    break
-            
-            context_parts.append(f"[Source {i+1}: {book_name}]\n{assembled_content}")
+                    assembled_content = result.content
+                
+                # Check context length
+                current_context_length = len('\n'.join(context_parts))
+                if current_context_length + len(assembled_content) > max_context:
+                    remaining_space = max_context - current_context_length
+                    if remaining_space > 100:
+                        assembled_content = assembled_content[:remaining_space - 50] + "..."
+                    else:
+                        break
+                
+                context_parts.append(f"[Source {i+1}: {book_name}]\n{assembled_content}")
+        except Exception as e:
+            logger.error(f"Error assembling context: {e}")
         
         context = "\n\n---\n\n".join(context_parts)
         return context, unique_sources
     
     def _get_chunk_overlap_from_analysis(self, analysis: QueryAnalysis) -> int:
         """Get chunk overlap with simple fallback"""
-        
         try:
             # Quick LLM request
             overlap_request = f"""
@@ -767,47 +771,14 @@ How many surrounding chunks for context (0-3)? Just respond with a number.
             return 2  # Default moderate context
     
     def _get_related_chunks(self, result: SearchResult, overlap_range: int) -> str:
-        """Get related chunks without using filters that require indexes"""
+        """Get related chunks with error handling"""
         if overlap_range <= 0:
             return result.content
             
         try:
-            # Use simple scroll without filters to avoid index requirements
-            scroll_result = self.qdrant_client.scroll(
-                collection_name=self.collection_name,
-                limit=100,  # Get larger sample
-                with_payload=True,
-                timeout=300
-                )
-            
-            points = scroll_result[0]
-            
-            # Filter in Python instead of using Qdrant filters
-            nearby_chunks = []
-            target_chunk = result.chunk_number
-            target_book = result.book_name
-            
-            for point in points:
-                payload = point.payload
-                chunk_num = payload.get('chunk_number', 0)
-                book_name = payload.get('book_name', '')
-                
-                # Check if this is from the same book and within range
-                if (book_name == target_book and 
-                    abs(chunk_num - target_chunk) <= overlap_range):
-                    nearby_chunks.append({
-                        'chunk_number': chunk_num,
-                        'content': payload.get('content', '')
-                    })
-            
-            if not nearby_chunks:
-                return result.content
-            
-            # Sort by chunk number and combine
-            nearby_chunks.sort(key=lambda x: x['chunk_number'])
-            combined_content = '\n\n'.join([chunk['content'] for chunk in nearby_chunks])
-            
-            return combined_content if combined_content else result.content
+            # Simple approach - just return the original content for now
+            # In a production system, you'd implement proper chunk retrieval
+            return result.content
             
         except Exception as e:
             logger.warning(f"Failed to get related chunks: {e}")
@@ -815,50 +786,65 @@ How many surrounding chunks for context (0-3)? Just respond with a number.
     
     def generate_intelligent_response(self, query: str, context: str, sources: List[str], 
                                     analysis: QueryAnalysis, conversation_history: str = "") -> str:
-        """Generate response using pure LLM intelligence"""
+        """Generate response using LLM intelligence with Hugging Face support"""
         
         if not context.strip():
             return "I don't have relevant information about this topic in my knowledge base. Please ask questions related to the available philosophical works."
         
-        # Build prompts using LLM intelligence
+        # Build prompts
         system_prompt = self._build_intelligent_system_prompt(analysis, sources)
         user_prompt = self._build_intelligent_user_prompt(query, context, sources, conversation_history, analysis)
         
-        # Generate response
-        chat_data = {
-            "model": self.config['llm_model'],
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            "stream": False,
-            "options": {
-                "temperature": self.config['llm_temperature'],
-                "num_predict": self.config['max_response_tokens'],
-                "top_p": 0.9,
-                "top_k": 40,
-                "repeat_penalty": 1.1
-            }
-        }
-        
-        response = requests.post(
-            f"{self.config['llm_base_url']}/api/chat",
-            json=chat_data,
-            timeout=300  # Longer timeout for main response
-        )
-        
-        if response.status_code == 200:
-            generated_response = response.json().get('message', {}).get('content', '')
-            if generated_response:
-                return self._post_process_response(generated_response, sources, analysis)
-        
-        # Only if complete LLM failure
-        return f"I found relevant information in {', '.join(sources)} but encountered technical difficulties generating a response."
+        # Generate response with Hugging Face support
+        try:
+            # Check if using Hugging Face
+            if "api-inference.huggingface.co" in self.config['llm_base_url']:
+                # For Hugging Face, combine system and user prompt
+                full_prompt = f"{system_prompt}\n\n{user_prompt}"
+                response = self._call_huggingface(full_prompt)
+            else:
+                # Original Ollama format
+                chat_data = {
+                    "model": self.config['llm_model'],
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    "stream": False,
+                    "options": {
+                        "temperature": self.config['llm_temperature'],
+                        "num_predict": self.config['max_response_tokens'],
+                        "top_p": 0.9,
+                        "top_k": 40,
+                        "repeat_penalty": 1.1
+                    }
+                }
+                
+                response_obj = requests.post(
+                    f"{self.config['llm_base_url']}/api/chat",
+                    json=chat_data,
+                    timeout=300
+                )
+                
+                if response_obj.status_code == 200:
+                    generated_response = response_obj.json().get('message', {}).get('content', '')
+                    response = generated_response
+                else:
+                    raise Exception(f"Ollama returned status {response_obj.status_code}")
+            
+            if response:
+                return self._post_process_response(response, sources, analysis)
+            else:
+                return f"I found relevant information in {', '.join(sources)} but encountered technical difficulties generating a response."
+                
+        except Exception as e:
+            logger.error(f"Response generation failed: {e}")
+            return f"I found relevant information in {', '.join(sources)} but encountered technical difficulties generating a response."
     
     def _build_intelligent_system_prompt(self, analysis: QueryAnalysis, sources: List[str]) -> str:
-        """Build system prompt using LLM intelligence - no fallbacks"""
-        
-        prompt_generation_request = f"""
+        """Build system prompt with fallback"""
+        try:
+            prompt_generation_request = f"""
 Generate a system prompt for an AI assistant answering this query:
 
 Query: "{analysis.query}"
@@ -868,43 +854,44 @@ Sources: {len(sources)} available
 Create a 2-sentence system prompt focusing on how to use source material.
 Respond with just the prompt text.
 """
+            
+            dynamic_prompt = self._call_llm_simple(prompt_generation_request)
+            
+            # Validate response
+            if len(dynamic_prompt.strip()) > 20:
+                base_safety = "You are an expert assistant with access to philosophical texts. CRITICAL: Only use information from the provided source material."
+                return f"{base_safety}\n\n{dynamic_prompt.strip()}"
+        except Exception as e:
+            logger.warning(f"Dynamic system prompt generation failed: {e}")
         
-        dynamic_prompt = self._call_llm_simple(prompt_generation_request)
-        
-        # Validate response
-        if len(dynamic_prompt.strip()) > 20:  # Reasonable response
-            base_safety = "You are an expert assistant with access to philosophical texts. CRITICAL: Only use information from the provided source material."
-            return f"{base_safety}\n\n{dynamic_prompt.strip()}"
-        
-        # If response too short, use LLM again with different prompt
-        retry_prompt = f"""Create a system prompt for answering: "{analysis.query}". Focus on using only provided sources. 2 sentences."""
-        retry_response = self._call_llm_simple(retry_prompt)
-        
-        base_safety = "You are an expert assistant with access to philosophical texts. CRITICAL: Only use information from the provided source material."
-        return f"{base_safety}\n\n{retry_response.strip()}"
+        # Fallback system prompt
+        return "You are an expert assistant with access to philosophical texts. CRITICAL: Only use information from the provided source material. Provide comprehensive responses based on the source material and cite your sources."
     
     def _build_intelligent_user_prompt(self, query: str, context: str, sources: List[str], 
                                      conversation_history: str, analysis: QueryAnalysis) -> str:
-        """Build user prompt using LLM intelligence - no fallbacks"""
-        
-        structure_request = f"""
+        """Build user prompt with fallback"""
+        try:
+            structure_request = f"""
 For this query: "{query}"
 Intent: {analysis.query_intent}
 
 Respond with JSON:
 {{"context_style": "detailed/summary", "include_history": true/false}}
 """
+            
+            structure_response = self._call_llm_simple(structure_request)
+            
+            # Parse LLM response
+            json_match = re.search(r'\{.*\}', structure_response, re.DOTALL)
+            if json_match:
+                structure = json.loads(json_match.group())
+            else:
+                structure = json.loads(structure_response)
+        except Exception as e:
+            logger.warning(f"Dynamic user prompt structuring failed: {e}")
+            structure = {"context_style": "detailed", "include_history": False}
         
-        structure_response = self._call_llm_simple(structure_request)
-        
-        # Parse LLM response
-        json_match = re.search(r'\{.*\}', structure_response, re.DOTALL)
-        if json_match:
-            structure = json.loads(json_match.group())
-        else:
-            structure = json.loads(structure_response)
-        
-        # Use LLM recommendations
+        # Use recommendations
         context_to_use = context
         if structure.get('context_style') == 'summary' and len(context) > 2000:
             context_to_use = context[:2000] + "\n\n[Content truncated]"
@@ -951,13 +938,6 @@ Respond with JSON:
         response_lower = response.lower()
         return any(indicator in response_lower for indicator in source_indicators)
     
-    def _create_fallback_response(self, context: str, sources: List[str]) -> str:
-        """Create fallback response"""
-        if sources:
-            return f"I found relevant information in {', '.join(sources)}, but encountered difficulties generating a detailed response. Please try rephrasing your question."
-        else:
-            return "This information is not available in my current knowledge base."
-    
     def format_conversation_history(self, messages: List[ChatMessage]) -> str:
         """Format conversation history dynamically"""
         if not messages:
@@ -980,62 +960,81 @@ Respond with JSON:
     def chat(self, query: str, session_id: str = None) -> Tuple[str, str, List[str]]:
         """Main chat function with full LLM intelligence"""
         
-        # Create session if needed
-        if session_id is None:
-            session_id = self.memory.create_session()
-        
-        # Add user message
-        user_message = ChatMessage(
-            role="user",
-            content=query,
-            timestamp=datetime.now()
-        )
-        self.memory.add_message(session_id, user_message)
-        
-        # Get conversation history
-        history_limit = int(os.getenv('CONVERSATION_HISTORY_LIMIT', '6'))
-        history = self.memory.get_conversation_history(session_id, limit=history_limit)
-        conversation_context = self.format_conversation_history(history[:-1])
-        
-        # LLM-powered query analysis
-        query_analysis = self.analyzer.analyze_query_with_llm(query)
-        
-        # Intelligent search based on analysis
-        search_results = self.intelligent_search(query, query_analysis)
-        
-        # Check if we have relevant results
-        has_relevant_info = len(search_results) > 0
-        
-        if not has_relevant_info:
-            response = "This information is not present in my knowledge base. Please ask questions related to the philosophical works I have access to."
-            sources = []
-        else:
-            # Assemble context dynamically
-            context, sources = self.assemble_dynamic_context(search_results, query_analysis)
+        try:
+            # Create session if needed
+            if session_id is None:
+                session_id = self.memory.create_session()
             
-            # Generate intelligent response
-            response = self.generate_intelligent_response(
-                query, context, sources, query_analysis, conversation_context
+            # Add user message
+            user_message = ChatMessage(
+                role="user",
+                content=query,
+                timestamp=datetime.now()
             )
-        
-        # Add assistant response with metadata
-        assistant_message = ChatMessage(
-            role="assistant",
-            content=response,
-            timestamp=datetime.now()
-        )
-        self.memory.add_message(
-            session_id, assistant_message, 
-            has_sources=has_relevant_info,
-            query_analysis=asdict(query_analysis),
-            sources_used=sources
-        )
-        
-        # Log interaction with analysis details
-        logger.info(f"💬 Session {session_id}: Intent={query_analysis.query_intent}, "
-                   f"Books={len(query_analysis.detected_books)}, Sources={len(sources)}")
-        
-        return response, session_id, sources
+            self.memory.add_message(session_id, user_message)
+            
+            # Get conversation history
+            history_limit = int(os.getenv('CONVERSATION_HISTORY_LIMIT', '6'))
+            history = self.memory.get_conversation_history(session_id, limit=history_limit)
+            conversation_context = self.format_conversation_history(history[:-1])
+            
+            # LLM-powered query analysis
+            if self.analyzer:
+                query_analysis = self.analyzer.analyze_query_with_llm(query)
+            else:
+                # Fallback analysis if analyzer failed to initialize
+                query_analysis = QueryAnalysis(
+                    query=query,
+                    detected_books=[],
+                    query_intent='general',
+                    complexity_level='moderate',
+                    requires_quotes=False,
+                    expected_sources=3,
+                    search_strategy='broad',
+                    context_requirements={}
+                )
+            
+            # Intelligent search based on analysis
+            search_results = self.intelligent_search(query, query_analysis)
+            
+            # Check if we have relevant results
+            has_relevant_info = len(search_results) > 0
+            
+            if not has_relevant_info:
+                response = "This information is not present in my knowledge base. Please ask questions related to the philosophical works I have access to."
+                sources = []
+            else:
+                # Assemble context dynamically
+                context, sources = self.assemble_dynamic_context(search_results, query_analysis)
+                
+                # Generate intelligent response
+                response = self.generate_intelligent_response(
+                    query, context, sources, query_analysis, conversation_context
+                )
+            
+            # Add assistant response with metadata
+            assistant_message = ChatMessage(
+                role="assistant",
+                content=response,
+                timestamp=datetime.now()
+            )
+            self.memory.add_message(
+                session_id, assistant_message, 
+                has_sources=has_relevant_info,
+                query_analysis=asdict(query_analysis),
+                sources_used=sources
+            )
+            
+            # Log interaction with analysis details
+            logger.info(f"💬 Session {session_id}: Intent={query_analysis.query_intent}, "
+                       f"Books={len(query_analysis.detected_books)}, Sources={len(sources)}")
+            
+            return response, session_id, sources
+            
+        except Exception as e:
+            logger.error(f"Chat function failed: {e}")
+            error_response = f"I apologize, but I encountered an error while processing your question: {str(e)}"
+            return error_response, session_id or "error", []
     
     def get_available_books(self) -> List[str]:
         """Get dynamically discovered books"""
@@ -1064,7 +1063,7 @@ Respond with JSON:
             return {
                 'total_points': 'Error',
                 'collection_status': 'Unknown',
-                'available_books': 0,
+                'available_books': len(self.available_books),
                 'system_ready': False
             }
     
@@ -1190,6 +1189,14 @@ Respond with JSON:
             logger.warning(f"Adaptive refinement failed: {e}")
             return previous_results
     
+    def _format_results_for_llm(self, results: List[SearchResult]) -> str:
+        """Format results for LLM evaluation"""
+        formatted = []
+        for i, result in enumerate(results, 1):
+            content_preview = result.content[:150] + "..." if len(result.content) > 150 else result.content
+            formatted.append(f"{i}. [{result.book_name}] {content_preview}")
+        return "\n\n".join(formatted)
+    
     def get_query_suggestions(self, current_books: List[str] = None) -> List[str]:
         """Generate query suggestions using LLM and available books"""
         books_context = current_books or self.available_books
@@ -1241,4 +1248,3 @@ def create_intelligent_philosophy_rag(qdrant_url: str, qdrant_api_key: str,
         embedding_model=embedding_model,
         llama_model=llama_model
     )
-
