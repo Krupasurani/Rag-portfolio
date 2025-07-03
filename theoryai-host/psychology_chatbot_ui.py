@@ -6,14 +6,14 @@ import uuid
 
 warnings.filterwarnings("ignore")
 
-# Import RAG system - now using the dynamic version
+# Import RAG system - now using Groq SDK
 try:
     from accurate_rag_system import create_intelligent_philosophy_rag
 except ImportError:
     st.error("❌ Missing accurate_rag_system.py")
     st.stop()
 
-# Page config - optimized for all themes
+# Page config
 st.set_page_config(
     page_title="Philosophy AI",
     page_icon="🧠",
@@ -21,13 +21,11 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Clean, working CSS
+# CSS (keep your existing CSS - unchanged)
 st.markdown("""
 <style>
-    /* Import Premium Fonts */
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
 
-    /* CSS Variables */
     :root {
         --primary-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         --secondary-gradient: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
@@ -68,7 +66,6 @@ st.markdown("""
         --radius-full: 9999px;
     }
 
-    /* Dark Theme */
     @media (prefers-color-scheme: dark) {
         :root {
             --text-primary: #f8fafc;
@@ -80,13 +77,11 @@ st.markdown("""
         }
     }
 
-    /* Base Reset */
     * {
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         box-sizing: border-box;
     }
 
-    /* Hide Streamlit Branding */
     .stDeployButton,
     .stDecoration,
     header[data-testid="stHeader"],
@@ -95,20 +90,17 @@ st.markdown("""
         display: none !important;
     }
 
-    /* App Container */
     .stApp {
         background: var(--bg-secondary) !important;
         color: var(--text-primary) !important;
     }
 
-    /* Main Content */
     .block-container {
         background: var(--bg-primary) !important;
         padding: 0 !important;
         max-width: none !important;
     }
 
-    /* SIDEBAR STYLING */
     .css-1d391kg,
     [data-testid="stSidebar"] {
         background: var(--sidebar-bg) !important;
@@ -137,7 +129,6 @@ st.markdown("""
         font-size: 0.875rem !important;
     }
 
-    /* BUTTON STYLING */
     .stButton > button {
         width: 100% !important;
         border-radius: var(--radius-lg) !important;
@@ -172,7 +163,6 @@ st.markdown("""
         transform: translateY(-2px) !important;
     }
 
-    /* Sidebar Buttons */
     .css-1d391kg .stButton > button,
     [data-testid="stSidebar"] .stButton > button {
         background: rgba(255, 255, 255, 0.05) !important;
@@ -193,7 +183,6 @@ st.markdown("""
         border: none !important;
     }
 
-    /* Text Input */
     .stTextInput > div > div > input {
         background: rgba(255, 255, 255, 0.05) !important;
         border: 1px solid rgba(255, 255, 255, 0.2) !important;
@@ -208,7 +197,6 @@ st.markdown("""
         outline: none !important;
     }
 
-    /* Metrics */
     .css-1d391kg .stMetric,
     [data-testid="stSidebar"] .stMetric {
         background: rgba(255, 255, 255, 0.05) !important;
@@ -218,7 +206,6 @@ st.markdown("""
         color: var(--sidebar-text-primary) !important;
     }
 
-    /* Header */
     .chat-header {
         text-align: center;
         padding: var(--space-4) var(--space-4);
@@ -236,7 +223,6 @@ st.markdown("""
         margin: 0;
     }
 
-    /* Messages */
     .messages {
         max-width: 800px;
         margin: 0 auto;
@@ -291,7 +277,6 @@ st.markdown("""
         box-shadow: var(--shadow-md);
     }
 
-    /* Chat Input */
     .stChatInput {
         position: fixed !important;
         bottom: 0 !important;
@@ -329,7 +314,6 @@ st.markdown("""
         color: var(--text-tertiary) !important;
     }
 
-    /* Mobile */
     @media (max-width: 768px) {
         .stChatInput {
             left: 0 !important;
@@ -344,7 +328,6 @@ st.markdown("""
         }
     }
 
-    /* Success Messages */
     .stSuccess {
         background: var(--success-gradient) !important;
         color: white !important;
@@ -352,7 +335,6 @@ st.markdown("""
         border-radius: var(--radius-lg) !important;
     }
 
-    /* Scrollbar */
     ::-webkit-scrollbar {
         width: 6px;
     }
@@ -368,7 +350,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Initialize session state with persistence
+# Session state and helper functions (keep your existing code)
 def load_chat_sessions():
     """Load chat sessions from file"""
     try:
@@ -376,7 +358,6 @@ def load_chat_sessions():
         if os.path.exists("chat_sessions.json"):
             with open("chat_sessions.json", "r", encoding='utf-8') as f:
                 data = json.load(f)
-                # Convert timestamp strings back to datetime objects
                 for session_id, session_data in data.items():
                     session_data['created_at'] = datetime.fromisoformat(session_data['created_at'])
                     for message in session_data['messages']:
@@ -389,7 +370,6 @@ def load_chat_sessions():
 def save_chat_sessions():
     """Save chat sessions to file"""
     try:
-        # Convert datetime objects to strings for JSON serialization
         data_to_save = {}
         for session_id, session_data in st.session_state.chat_sessions.items():
             data_to_save[session_id] = {
@@ -422,22 +402,21 @@ if 'books' not in st.session_state:
 if 'renaming_session' not in st.session_state:
     st.session_state.renaming_session = None
 
-# Initialize RAG system when needed
+# Initialize RAG system with Groq SDK
 def get_or_create_rag_system():
     if st.session_state.rag_system is None:
-        with st.spinner("🔄 Initializing Intelligent Philosophy AI..."):
+        with st.spinner("🔄 Initializing Philosophy AI with Groq Llama 3.1 8B Instant..."):
             st.session_state.rag_system = create_intelligent_philosophy_rag(
                 qdrant_url="https://fb9ece4c-0f7a-4ec8-8ed9-dd5056f41da6.europe-west3-0.gcp.cloud.qdrant.io:6333",
                 qdrant_api_key="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2Nlc3MiOiJtIn0.AXcpbBYr2Jt5t2ysC1z0I2duz-uSK5H9cLPg5YXw_7k",
                 collection_name="psychology_books_kb",
-                llama_model="llama3.2:3b"
+                llama_model="llama-3.1-8b-instant"
             )
             st.session_state.books = st.session_state.rag_system.get_available_books()
     return st.session_state.rag_system
 
-# Helper functions
+# Helper functions (keep your existing helper functions)
 def create_new_session():
-    """Create a new chat session with auto-save"""
     session_id = str(uuid.uuid4())[:8]
     st.session_state.chat_sessions[session_id] = {
         'messages': [],
@@ -449,13 +428,11 @@ def create_new_session():
     return session_id
 
 def get_current_messages():
-    """Get messages for current session"""
     if st.session_state.current_session_id and st.session_state.current_session_id in st.session_state.chat_sessions:
         return st.session_state.chat_sessions[st.session_state.current_session_id]['messages']
     return []
 
 def add_message(role, content, sources=None):
-    """Add message to current session with auto-save"""
     if not st.session_state.current_session_id:
         create_new_session()
 
@@ -468,7 +445,6 @@ def add_message(role, content, sources=None):
 
     st.session_state.chat_sessions[st.session_state.current_session_id]['messages'].append(message)
 
-    # Update session title with first user message
     if role == 'user' and len(st.session_state.chat_sessions[st.session_state.current_session_id]['messages']) == 1:
         title = content[:30] + "..." if len(content) > 30 else content
         st.session_state.chat_sessions[st.session_state.current_session_id]['title'] = title
@@ -476,19 +452,16 @@ def add_message(role, content, sources=None):
     save_chat_sessions()
 
 def rename_session(session_id, new_title):
-    """Rename a chat session"""
     if session_id in st.session_state.chat_sessions:
         st.session_state.chat_sessions[session_id]['title'] = new_title
         save_chat_sessions()
 
-# Sidebar
+# Sidebar (keep your existing sidebar code)
 with st.sidebar:
-    # New Chat Button
     if st.button("✨ New Chat", use_container_width=True, type="primary"):
         create_new_session()
         st.rerun()
 
-    # Chat History
     st.markdown("### 💬 Chat History")
     if st.session_state.chat_sessions:
         for session_id, session_data in reversed(list(st.session_state.chat_sessions.items())):
@@ -533,7 +506,6 @@ with st.sidebar:
                     save_chat_sessions()
                     st.rerun()
 
-            # Rename input
             if st.session_state.renaming_session == session_id:
                 with st.container():
                     new_title = st.text_input(
@@ -558,7 +530,6 @@ with st.sidebar:
     else:
         st.write("🌟 Start your first conversation!")
 
-    # Books List
     st.markdown("### 📚 Available Books")
     if st.session_state.books:
         st.markdown("**Philosophy Collection:**")
@@ -570,7 +541,6 @@ with st.sidebar:
         else:
             st.markdown("*Loading books...*")
 
-    # System Info
     st.markdown("### 📊 System Overview")
     col1, col2 = st.columns(2)
     with col1:
@@ -582,7 +552,7 @@ with st.sidebar:
 st.markdown("""
 <div class="chat-header">
     <h1 class="chat-title">🧠 Philosophy AI</h1>
-    <p style="color: var(--text-secondary); font-size: 1rem; margin-top: 0.5rem;">Welcome</p>
+    <p style="color: var(--text-secondary); font-size: 1rem; margin-top: 0.5rem;">Powered by Groq Llama 3.1 8B Instant</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -616,12 +586,12 @@ if messages:
     st.markdown('</div>', unsafe_allow_html=True)
 
 # Chat input
-if prompt := st.chat_input("Ask me..."):
+if prompt := st.chat_input("Ask me about philosophy..."):
     rag = get_or_create_rag_system()
 
     add_message("user", prompt)
 
-    with st.spinner("🧠 Using AI intelligence to find relevant information..."):
+    with st.spinner("🦙 Groq Llama 3.1 8B is processing your question..."):
         try:
             response, session_id, sources = rag.chat(prompt, st.session_state.current_session_id)
             add_message("assistant", response, sources)
